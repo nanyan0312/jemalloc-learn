@@ -63,7 +63,7 @@ size_class(
 	sc->lg_delta = lg_delta;
 	sc->ndelta = ndelta;
 	size_t size = reg_size_compute(lg_base, lg_delta, ndelta);
-	sc->psz = (size % (ZU(1) << lg_page) == 0);
+	sc->psz = (size % (ZU(1) << lg_page) == 0); // true if the size class is a page-multiple size class
 	if (index == 0) {
 		assert(!sc->psz);
 	}

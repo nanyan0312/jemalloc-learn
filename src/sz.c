@@ -3,7 +3,7 @@
 #include "jemalloc/internal/sz.h"
 
 JEMALLOC_ALIGNED(CACHELINE)
-size_t sz_pind2sz_tab[SC_NPSIZES+1];
+size_t sz_pind2sz_tab[SC_NPSIZES+1]; // size class lookup table for page-multiple size classes, The sz_pind2sz_tab only contains entries for page-aligned size classes
 size_t sz_large_pad;
 
 size_t
@@ -55,10 +55,17 @@ sz_psz_quantize_ceil(size_t size) {
 
 static void
 sz_boot_pind2sz_tab(const sc_data_t *sc_data) {
+	/*
+	The first few page size classes (for x86_64 Linux) are:
+	Index 0: 4096 bytes (1 page)
+	Index 1: 8192 bytes (2 pages)
+	Index 2: 12288 bytes (3 pages)
+	Index 3: 16384 bytes (4 pages)
+	*/
 	int pind = 0;
 	for (unsigned i = 0; i < SC_NSIZES; i++) {
 		const sc_t *sc = &sc_data->sc[i];
-		if (sc->psz) {
+		if (sc->psz) { // if the size class is a page-multiple size class
 			sz_pind2sz_tab[pind] = (ZU(1) << sc->lg_base)
 			    + (ZU(sc->ndelta) << sc->lg_delta);
 			pind++;
@@ -77,7 +84,7 @@ sz_boot_index2size_tab(const sc_data_t *sc_data) {
 	for (unsigned i = 0; i < SC_NSIZES; i++) {
 		const sc_t *sc = &sc_data->sc[i];
 		sz_index2size_tab[i] = (ZU(1) << sc->lg_base)
-		    + (ZU(sc->ndelta) << (sc->lg_delta));
+		    + (ZU(sc->ndelta) << (sc->lg_delta)); // mapping from some index to the size of a size class
 	}
 }
 

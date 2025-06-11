@@ -169,10 +169,10 @@
 /*
  * Size class N + (1 << SC_LG_NGROUP) twice the size of size class N.
  */
-#define SC_LG_NGROUP 2
-#define SC_LG_TINY_MIN 3
+#define SC_LG_NGROUP 2 // log base of number of size classes in a group, so there are 4 size classes in each group
+#define SC_LG_TINY_MIN 3 // log base of the smallest tiny size class, so the smallest tiny size class is 1 << 3 = 8
 
-#if SC_LG_TINY_MIN == 0
+#if SC_LG_TINY_MIN == 0 // 3 == 0
 /* The div module doesn't support division by 1, which this would require. */
 #error "Unsupported LG_TINY_MIN"
 #endif
@@ -181,22 +181,37 @@
  * The definitions below are all determined by the above settings and system
  * characteristics.
  */
-#define SC_NGROUP (1ULL << SC_LG_NGROUP)
-#define SC_PTR_BITS ((1ULL << LG_SIZEOF_PTR) * 8)
-#define SC_NTINY (LG_QUANTUM - SC_LG_TINY_MIN)
-#define SC_LG_TINY_MAXCLASS (LG_QUANTUM > SC_LG_TINY_MIN ? LG_QUANTUM - 1 : -1)
-#define SC_NPSEUDO SC_NGROUP
-#define SC_LG_FIRST_REGULAR_BASE (LG_QUANTUM + SC_LG_NGROUP)
+#define SC_NGROUP (1ULL << SC_LG_NGROUP)  // 4, numer of size classes in a group
+#define SC_PTR_BITS ((1ULL << LG_SIZEOF_PTR) * 8)  // 64, how many bits are in a pointer
+#define SC_NTINY (LG_QUANTUM - SC_LG_TINY_MIN) // 4 - 3 = 1, number of tiny size classes
+#define SC_LG_TINY_MAXCLASS (LG_QUANTUM > SC_LG_TINY_MIN ? LG_QUANTUM - 1 : -1) // 4 - 1 = 3, lg of the largest tiny size class, so size 8 is the largest tiny size class
+#define SC_NPSEUDO SC_NGROUP // 4, number of size classes in the pseudo group, which are sizes 16, 32, 48, 64(inclusive)
+#define SC_LG_FIRST_REGULAR_BASE (LG_QUANTUM + SC_LG_NGROUP) // 4 + 2 = 6, lg of the first regular size class, so size 64 is the base of the first regular group, which size 64 itself is not included in the group
 /*
+ * nanya: On a 64-bit system, pointers are 64 bits wide, 
+ * but the highest bit is typically reserved for the kernel/user space split
+ * This means the maximum valid pointer value is 2^63 - 1 (not 2^64 - 1).
+ * 
  * We cap allocations to be less than 2 ** (ptr_bits - 1), so the highest base
  * we need is 2 ** (ptr_bits - 2). (This also means that the last group is 1
  * size class shorter than the others).
+ * 
+ * nanya: Recall that when we minus 1 from a log base, we are actually dividing the base by 2, if we minus 2, we are dividing by 4, etc
+ * so the largest group's size classes are 2^62, 2^62 + 2^60, 2^62 + 2^61, 2^62 + 2^62
+ * 
  * We could probably save some space in arenas by capping this at LG_VADDR size.
  */
-#define SC_LG_BASE_MAX (SC_PTR_BITS - 2)
+#define SC_LG_BASE_MAX (SC_PTR_BITS - 2) // 64 - 2= 62, lg of the largest base, because we cap allocations to be less than 2 ** (ptr_bits - 1)
+/*
+ * nanya: (SC_LG_BASE_MAX - SC_LG_FIRST_REGULAR_BASE + 1) = 62 - 6 + 1 = 57, is how many bases there are in total. 
+ * for example if SC_LG_BASE_MAX is 7, SC_LG_FIRST_REGULAR_BASE is 6, there are 2 bases: 6 and 7.
+ * note that the entire design is that the range of each size class group is a power of 2. 
+ * since each group has one base, that means 57 groups in total. Since each group has SC_NGROUP = 4 size classes, that means 57 * 4 = 228 size classes in total.
+ * However, the last group is 1 size class shorter than the others, so we subtract 1 from the total, which gives us 227 size classes.
+ */
 #define SC_NREGULAR (SC_NGROUP * 					\
-    (SC_LG_BASE_MAX - SC_LG_FIRST_REGULAR_BASE + 1) - 1)
-#define SC_NSIZES (SC_NTINY + SC_NPSEUDO + SC_NREGULAR)
+    (SC_LG_BASE_MAX - SC_LG_FIRST_REGULAR_BASE + 1) - 1) // 4 * (62 - 6 + 1) - 1 = 227, number of regular size classes
+#define SC_NSIZES (SC_NTINY + SC_NPSEUDO + SC_NREGULAR) // 1 + 4 + 227 = 232, total number of size classes
 
 /*
  * The number of size classes that are a multiple of the page size.
@@ -205,10 +220,10 @@
  *
  *      lg(base) |     base | highest SC | page-multiple SCs
  * --------------|------------------------------------------
- *   LG_PAGE - 1 | PAGE / 2 |       PAGE | 1
- *       LG_PAGE |     PAGE |   2 * PAGE | 1
- *   LG_PAGE + 1 | 2 * PAGE |   4 * PAGE | 2
- *   LG_PAGE + 2 | 4 * PAGE |   8 * PAGE | 4
+ *   LG_PAGE - 1 | PAGE / 2 |       PAGE | 1 (PAGE size class is included in this group)
+ *       LG_PAGE |     PAGE |   2 * PAGE | 1 (only 2*PAGE size class is included in this group)
+ *   LG_PAGE + 1 | 2 * PAGE |   4 * PAGE | 2 (3*PAGE and 4*PAGE size clasess are included in this group)
+ *   LG_PAGE + 2 | 4 * PAGE |   8 * PAGE | 4 (5/6/7/8*PAGE size clasess are included in this group)
  *
  * The number of page-multiple SCs continues to grow in powers of two, up until
  * lg_delta == lg_page, which corresponds to setting lg_base to lg_page +
@@ -223,21 +238,56 @@
  * This gives us the quantity we seek.
  */
 #define SC_NPSIZES (							\
-    SC_NGROUP								\
-    + (SC_LG_BASE_MAX - (LG_PAGE + SC_LG_NGROUP)) * SC_NGROUP		\
-    + SC_NGROUP - 1)
+    SC_NGROUP								\  // this included the first 3 rows in above table
+    + (SC_LG_BASE_MAX - (LG_PAGE + SC_LG_NGROUP)) * SC_NGROUP		\ // this included the 4th row in above table, plus more
+    + SC_NGROUP - 1) // this includes the final biggest size class group
+	// 4 + 4 * (62 - 16 - 2) + 4 - 1 = 4 + 176 + 3 = 183, number of page-multiple size classes
 
 /*
  * We declare a size class is binnable if size < page size * group. Or, in other
  * words, lg(size) < lg(page size) + lg(group size).
+ * 
+ * nanya: so only size classes < 4*PAGE are "binnable"
+ * A slab is a contiguous block of memory, typically aligned to page boundaries
+ * It's divided into equal-sized regions (the size of the bin's size class)
+ * Each region can hold one object of that size class
+ * The slab maintains metadata to track which regions are free/used
+ * so each "bin" just means a group of slabs, each of which is divided into equal-sized regions of the bin's corresponding size class
+ * 
+ * Bin (size class = 32 bytes)
+├── Current Slab (slabcur)
+│   ├── Region 1 (32 bytes)
+│   ├── Region 2 (32 bytes)
+│   ├── Region 3 (32 bytes)
+│   └── ...
+├── Non-full Slabs (slabs_nonfull)
+│   ├── Slab 1
+│   │   ├── Some free regions
+│   │   └── Some used regions
+│   └── Slab 2
+│       ├── Some free regions
+│       └── Some used regions
+└── Full Slabs (slabs_full)
+    ├── Slab 3 (all regions used)
+    └── Slab 4 (all regions used)
+
+ * To reduce contention, bins can be sharded:
+ * Each shard is a separate bin with its own slabs
+ * This allows multiple threads to allocate from the same size class without contention.
+ * 
+ * Why only allocations < 4*PAGE are managed via bins/slabs?
+ * Bins are used for slab-based allocation, where a single page or group of pages is divided into fixed-size regions
+ * When a size class is too large, the number of regions per slab becomes too small, or one item of that size would need to span an unreasonable number of pages
+ * For example, if a size class is 4PAGE (32KB on x86_64), a single page would only fit one object
+ * This would defeat the purpose of slab allocation, which is to efficiently manage multiple objects in a single page
  */
-#define SC_NBINS (							\
+#define SC_NBINS (							\ // ultimately, SC_NBINS is the number of size classes that are "binnable"
     /* Sub-regular size classes. */					\
-    SC_NTINY + SC_NPSEUDO						\
+    SC_NTINY + SC_NPSEUDO						\ // this includes all size classes up to LG_QUNATUM
     /* Groups with lg_regular_min_base <= lg_base <= lg_base_max */	\
-    + SC_NGROUP * (LG_PAGE + SC_LG_NGROUP - SC_LG_FIRST_REGULAR_BASE)	\
-    /* Last SC of the last group hits the bound exactly; exclude it. */	\
-    - 1)
+    + SC_NGROUP * (LG_PAGE + SC_LG_NGROUP - SC_LG_FIRST_REGULAR_BASE)	\ // this includes all size classes up to and including 4*PAGE
+    /* Last SC of the last group hits the bound 4*PAEG exactly; exclude the 4*PAGE size class. */	\
+    - 1) // 1 + 4 + 4 * (16 + 2 - 6) - 1 = 5 + 48 - 1 = 54, number of bins
 
 /*
  * The size2index_tab lookup table uses uint8_t to encode each bin index, so we
@@ -248,16 +298,22 @@
 #endif
 
 /* The largest size class in the lookup table, and its binary log. */
+/* nanya: why limit the size classess in look up table to be smaller than SC_LG_MAX_LOOKUP?
+ * For sizes up to 2^12 (4KB), we need 4096 entries. The lookup table is designed to be small enough to fit in CPU cache
+* A 4KB table (2^12 entries) is cache-friendly
+* Also, Most allocations in real programs are small. The vast majority of allocations are less than 4KB
+* Larger allocations are less frequent, so the performance impact of using a slower lookup method is less significant
+*/
 #define SC_LG_MAX_LOOKUP 12
-#define SC_LOOKUP_MAXCLASS (1 << SC_LG_MAX_LOOKUP)
+#define SC_LOOKUP_MAXCLASS (1 << SC_LG_MAX_LOOKUP) // 1 << 12 = 4096, the largest size class in the lookup table
 
 /* Internal, only used for the definition of SC_SMALL_MAXCLASS. */
-#define SC_SMALL_MAX_BASE (1 << (LG_PAGE + SC_LG_NGROUP - 1))
-#define SC_SMALL_MAX_DELTA (1 << (LG_PAGE - 1))
+#define SC_SMALL_MAX_BASE (1 << (LG_PAGE + SC_LG_NGROUP - 1)) // 2*PAGE is the base of the "small max" group
+#define SC_SMALL_MAX_DELTA (1 << (LG_PAGE - 1)) // in this "small max" group, the size classes range from 2*PAGE to 4*PAGE, since there are 4 classes in the group, so the delta is half of PAGE
 
 /* The largest size class allocated out of a slab. */
 #define SC_SMALL_MAXCLASS (SC_SMALL_MAX_BASE				\
-    + (SC_NGROUP - 1) * SC_SMALL_MAX_DELTA)
+    + (SC_NGROUP - 1) * SC_SMALL_MAX_DELTA) // 2*PAGE + (4 - 1) * 0.5 * PAGE = 3.5*PAGE, the largest size class allocated out of a slab
 
 /* The fastpath assumes all lookup-able sizes are small. */
 #if (SC_SMALL_MAXCLASS < SC_LOOKUP_MAXCLASS)
@@ -265,19 +321,25 @@
 #endif
 
 /* The smallest size class not allocated out of a slab. */
-#define SC_LARGE_MINCLASS ((size_t)1ULL << (LG_PAGE + SC_LG_NGROUP))
-#define SC_LG_LARGE_MINCLASS (LG_PAGE + SC_LG_NGROUP)
+#define SC_LARGE_MINCLASS ((size_t)1ULL << (LG_PAGE + SC_LG_NGROUP)) // 4*PAGE, the smallest size class not allocated out of a slab
+#define SC_LG_LARGE_MINCLASS (LG_PAGE + SC_LG_NGROUP) // 14
 
 /* Internal; only used for the definition of SC_LARGE_MAXCLASS. */
-#define SC_MAX_BASE ((size_t)1 << (SC_PTR_BITS - 2))
-#define SC_MAX_DELTA ((size_t)1 << (SC_PTR_BITS - 2 - SC_LG_NGROUP))
+#define SC_MAX_BASE ((size_t)1 << (SC_PTR_BITS - 2)) // 2^(62), this is the base of the largest size class group, aka the last one
+#define SC_MAX_DELTA ((size_t)1 << (SC_PTR_BITS - 2 - SC_LG_NGROUP))// (2^62)/4, this is delta of the largest size class group
 
 /* The largest size class supported. */
-#define SC_LARGE_MAXCLASS (SC_MAX_BASE + (SC_NGROUP - 1) * SC_MAX_DELTA)
+#define SC_LARGE_MAXCLASS (SC_MAX_BASE + (SC_NGROUP - 1) * SC_MAX_DELTA) // 2^62 + 3/4 * 2^62
 
 /* Maximum number of regions in one slab. */
+/*
+ * nanya: why SC_LG_SLAB_MAXREGS by default is (LG_PAGE - SC_LG_TINY_MIN)?
+ * this is equivalent to PAGE/8, in other words, how many 8-byte regions can fit into one page
+ * so by default, SC_LG_SLAB_MAXREGS The SC_LG_SLAB_MAXREGS is set to (LG_PAGE - SC_LG_TINY_MIN) 
+ * to ensure that the smallest possible size class can fit at least one region in a page.
+*/
 #ifndef CONFIG_LG_SLAB_MAXREGS
-#  define SC_LG_SLAB_MAXREGS (LG_PAGE - SC_LG_TINY_MIN)
+#  define SC_LG_SLAB_MAXREGS (LG_PAGE - SC_LG_TINY_MIN) // 12 - 3 = 9
 #else
 #  if CONFIG_LG_SLAB_MAXREGS < (LG_PAGE - SC_LG_TINY_MIN)
 #    error "Unsupported SC_LG_SLAB_MAXREGS"
@@ -286,9 +348,10 @@
 #  endif
 #endif
 
-#define SC_SLAB_MAXREGS (1U << SC_LG_SLAB_MAXREGS)
+#define SC_SLAB_MAXREGS (1U << SC_LG_SLAB_MAXREGS) // 512
 
 typedef struct sc_s sc_t;
+// nanya: sc_s represents a single size class and its properties
 struct sc_s {
 	/* Size class index, or -1 if not a valid size class. */
 	int index;
@@ -314,6 +377,7 @@ struct sc_s {
 };
 
 typedef struct sc_data_s sc_data_t;
+// nanya: sc_data_s is a global structure that holds all size class information for the entire allocator
 struct sc_data_s {
 	/* Number of tiny size classes. */
 	unsigned ntiny;

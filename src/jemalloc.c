@@ -209,6 +209,10 @@ static uint8_t	malloc_slow_flags;
 #  define NO_INITIALIZER	((unsigned long)0)
 #  define INITIALIZER		pthread_self()
 #  define IS_INITIALIZER	(malloc_initializer == pthread_self())
+
+
+// malloc_initializer is used to track which thread is performing the initialization of jemalloc. It's particularly important for thread-safe initialization in multi-threaded environments.
+
 static pthread_t		malloc_initializer = NO_INITIALIZER;
 #else
 #  define NO_INITIALIZER	false
@@ -1812,6 +1816,7 @@ malloc_conf_init(sc_data_t *sc_data, unsigned bin_shard_sizes[SC_NBINS],
 
 #undef MALLOC_CONF_NSOURCES
 
+// nanya: only one thread will return true here, which is the first ever thread that runs this code
 static bool
 malloc_init_hard_needed(void) {
 	if (malloc_initialized() || (IS_INITIALIZER && malloc_init_state ==
@@ -1825,6 +1830,10 @@ malloc_init_hard_needed(void) {
 	}
 #ifdef JEMALLOC_THREADED_INIT
 	if (malloc_initializer != NO_INITIALIZER && !IS_INITIALIZER) {
+		// nanya: malloc_init_state is not 0, meaning initialization has not fully finished
+		// and, malloc_initializer is not NO_INITIALIZER, so some thread has started initializing,
+		// but, not this thread, so we wait, and then return false.
+
 		/* Busy-wait until the initializing thread completes. */
 		spin_t spinner = SPIN_INITIALIZER;
 		do {
@@ -1840,7 +1849,7 @@ malloc_init_hard_needed(void) {
 
 static bool
 malloc_init_hard_a0_locked(void) {
-	malloc_initializer = INITIALIZER;
+	malloc_initializer = INITIALIZER; // nanya: set this thread as the initiailzer
 
 	JEMALLOC_DIAGNOSTIC_PUSH
 	JEMALLOC_DIAGNOSTIC_IGNORE_MISSING_STRUCT_FIELD_INITIALIZERS
@@ -2178,7 +2187,11 @@ malloc_init_hard(void) {
 #if defined(_WIN32) && _WIN32_WINNT < 0x0600
 	_init_init_lock();
 #endif
-	malloc_mutex_lock(TSDN_NULL, &init_lock);
+    // init_lock is a global singleton lock
+	// This lock() only grabs a real lock if isthreaded is true, which is always true
+	// in most cases
+	// so this locking prevents concurrency between multiple threads
+	malloc_mutex_lock(TSDN_NULL, &init_lock); 
 
 #define UNLOCK_RETURN(tsdn, ret, reentrancy)		\
 	malloc_init_hard_cleanup(tsdn, reentrancy);	\

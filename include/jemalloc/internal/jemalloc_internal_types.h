@@ -21,10 +21,17 @@ typedef enum zero_realloc_action_e zero_realloc_action_t;
 typedef void (write_cb_t)(void *, const char *);
 
 enum malloc_init_e {
-	malloc_init_uninitialized	= 3,
-	malloc_init_a0_initialized	= 2,
-	malloc_init_recursible		= 1,
-	malloc_init_initialized		= 0 /* Common case --> jnz. */
+    // Value 3: Initial state, nothing has been initialized
+    malloc_init_uninitialized = 3,
+
+    // Value 2: Initial arena (arena 0) has been initialized
+    malloc_init_a0_initialized = 2,
+
+    // Value 1: Basic initialization done, can handle recursive malloc calls
+    malloc_init_recursible = 1,
+
+    // Value 0: Fully initialized and ready
+    malloc_init_initialized = 0  /* Common case --> jnz. */
 };
 typedef enum malloc_init_e malloc_init_t;
 
