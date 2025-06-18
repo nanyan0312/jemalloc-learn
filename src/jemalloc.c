@@ -182,7 +182,7 @@ sec_opts_t opt_hpa_sec_opts = SEC_OPTS_DEFAULT;
  * Points to an arena_t.
  */
 JEMALLOC_ALIGNED(CACHELINE)
-atomic_p_t		arenas[MALLOCX_ARENA_LIMIT];
+atomic_p_t		arenas[MALLOCX_ARENA_LIMIT]; // global array of arenas used to serve external requests
 static atomic_u_t	narenas_total; /* Use narenas_total_*(). */
 /* Below three are read-only after initialization. */
 static arena_t		*a0; /* arenas[0]. */
@@ -2113,10 +2113,16 @@ malloc_init_hard_a0_locked(void) {
 	 */
 	narenas_auto = 1;
 	manual_arena_base = narenas_auto + 1;
+	// arenas is a global array of areans used to serve external requests
 	memset(arenas, 0, sizeof(arena_t *) * narenas_auto);
 	/*
 	 * Initialize one arena here.  The rest are lazily created in
 	 * arena_choose_hard().
+	 * 
+	 * nanya: 
+	 * use b0 to allocate global arena a0, recall base allocator is used to allocate internal metadata
+	 * and a0 is internal metadata
+	 * store this initial global arena a0, as index 0 in arenas
 	 */
 	if (arena_init(TSDN_NULL, 0, &arena_config_default) == NULL) {
 		return true;

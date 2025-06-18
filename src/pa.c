@@ -27,7 +27,52 @@ pa_central_init(pa_central_t *central, base_t *base, bool hpa,
 	}
 	return false;
 }
+/*
+nanya
+Initialize the pa_shard within an arena
 
+### **Page Allocator Architecture**
+
+jemalloc's page allocator has a **hierarchical structure**:
+
+```
+pa_central_t (global/shared)
+    ↓
+pa_shard_t (per-arena)
+    ↓
+pac_t (Page Allocator Classic)
+```
+
+1. pa_central_t (Page Allocator Central)
+- Global/shared component that manages resources shared across multiple arenas
+- Contains the Huge Page Allocator (HPA) central component (hpa_central_t)
+- Used for coordinating huge page allocations across multiple arenas
+- Base pointer: Used for HPA metadata allocation
+
+2. pa_shard_t (Page Allocator Shard)
+Per-arena component that manages page-level allocations for a specific arena
+
+Contains:
+- pac_t pac - The classic page allocator for this arena
+- hpa_shard_t hpa_shard - Huge page allocator shard (if enabled)
+- sec_t hpa_sec - Small extent cache for HPA
+- edata_cache_t edata_cache - Cache for edata_t structures used to track user-allocated extents
+- base_t *base - Base allocator for metadata allocation, used to allocate metadata such as bins, or edata_t in edata_cache
+Statistics and configuration
+
+3. pac_t (Page Allocator Classic)
+The traditional page allocator that manages extents (contiguous page ranges)
+Handles allocation, deallocation, and decay of extents
+Implements the pai_t which is the interface for actual memory allocation/deallocation methods
+
+Contains:
+- edata_cache_t *edata_cache - Points to the same edata_cache as pa_shard
+- ecache_t ecache_dirty - Tracks freed user extents in dirty state
+- ecache_t ecache_muzzy - Tracks freed user extents in muzzy state
+- ecache_t ecache_retained - Tracks freed user extents in retained state
+- base_t *base - Base allocator for metadata allocation
+
+*/
 bool
 pa_shard_init(tsdn_t *tsdn, pa_shard_t *shard, pa_central_t *central,
     emap_t *emap, base_t *base, unsigned ind, pa_shard_stats_t *stats,

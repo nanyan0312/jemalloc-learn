@@ -1,6 +1,120 @@
 #include "jemalloc/internal/jemalloc_preamble.h"
 #include "jemalloc/internal/jemalloc_internal_includes.h"
 
+/*
+nanya
+
+## What is `pa_shard->edata_cache` and when is it used?
+
+### **`edata_cache_t` Purpose**
+The `edata_cache` is a **cache of `edata_t` structures** (extent metadata objects) that are used to track memory extents.
+
+### **What it contains:**
+```c
+typedef struct edata_cache_s edata_cache_t;
+struct edata_cache_s {
+    edata_avail_t avail;        // Available edata_t objects
+    atomic_zu_t count;          // Count of cached edata_t objects
+    malloc_mutex_t mtx;         // Mutex for thread safety
+    base_t *base;              // Base allocator for new edata_t objects
+};
+```
+
+### **When it's used:**
+
+1. **During extent allocation:**
+   - When the page allocator needs to track a new extent, it gets an `edata_t` from the cache.
+   - If the cache is empty, it allocates a new `edata_t` from the base allocator.
+
+2. **During extent deallocation:**
+   - When an extent is freed, its `edata_t` is returned to the cache for reuse.
+   - This avoids frequent allocation/deallocation of metadata structures.
+
+3. **Performance optimization:**
+   - Caching `edata_t` objects reduces the overhead of metadata allocation.
+   - Provides a fast path for getting extent metadata without going through the base allocator.
+
+### **Usage pattern:**
+```c
+// Get an edata_t for tracking a new extent
+edata_t *edata = edata_cache_get(tsdn, &shard->edata_cache);
+
+// Use edata_t to track the extent...
+
+// Return edata_t to cache when extent is freed
+edata_cache_put(tsdn, &shard->edata_cache, edata);
+
+
+Based on our discussion, here's the updated diagram showing the key differences between base allocator tracked blocks and pa_shard tracked extents:
+
+```
+Base Allocator (base_t) - METADATA ALLOCATIONS
+├── blocks list → [block_t1] → [block_t2] → [block_t3] → ...
+│   └── Each block contains:
+│       ├── base_block_t header
+│       ├── edata_t (describing available memory in this block)
+│       └── Available memory region containing:
+│           ├── arena_t structures
+│           ├── bin_t structures  
+│           ├── edata_t objects (for tracking user extents) ← REUSABLE METADATA
+│           └── Other jemalloc metadata
+│
+pa_shard->edata_cache - USER EXTENT TRACKING
+├── avail list → [edata_t1] → [edata_t2] → [edata_t3] → ...
+│   └── These edata_t objects:
+│       ├── Originally allocated from base allocator (metadata)
+│       ├── Cached for reuse to track different user extents
+│       ├── When in use: track user memory extents (from mmap)
+│       └── When cached: just metadata containers waiting for reuse
+│
+User Memory Extents (from mmap) - ACTUAL USER DATA
+├── [User Memory Region 1] ← tracked by edata_t from cache
+├── [User Memory Region 2] ← tracked by edata_t from cache  
+├── [User Memory Region 3] ← tracked by edata_t from cache
+└── ... (allocated via extent_alloc_wrapper → ehooks_alloc → mmap)
+```
+
+## **Key Differences:**
+
+### **Base Allocator Blocks:**
+- **Purpose**: Store jemalloc's internal metadata
+- **Memory source**: Allocated via base allocator's own mmap calls
+- **Content**: Arena structures, bin structures, reusable edata_t objects
+- **Lifecycle**: Long-lived, managed by base allocator
+
+### **pa_shard edata_cache:**
+- **Purpose**: Cache reusable edata_t objects for tracking user extents
+- **Source**: edata_t objects originally allocated from base allocator
+- **Function**: Reusable metadata containers that get associated with user memory
+- **Lifecycle**: Reused repeatedly to track different user extents
+
+### **User Memory Extents:**
+- **Purpose**: Store actual user data (malloc/free requests)
+- **Memory source**: Allocated via mmap in extent_alloc_wrapper
+- **Tracking**: Each user extent is tracked by an edata_t from the cache
+- **Lifecycle**: Created/destroyed based on user allocation patterns
+
+## **The Connection:**
+The `edata_t` objects in `pa_shard->edata_cache` are the **bridge** between metadata management (base allocator) and user memory tracking (page allocator). They start as metadata allocations from the base allocator but are reused to track user memory extents.
+
+The complete flow for when pa_shard tracked edata_cache are associated with extents holding user memory:
+
+1. User requests allocation
+   ↓
+2. pa_alloc() → pac_alloc_impl() → extent_alloc_wrapper()
+   ↓
+3. edata_cache_get() → gets edata_t from cache (base allocator)
+   ↓
+4. ehooks_alloc() → mmap() → gets user memory
+   ↓
+5. edata_init() → ASSOCIATES edata_t with user memory
+   ↓
+6. extent_register() → registers the extent
+   ↓
+7. Return edata_t (now tracking user memory)
+
+
+*/
 bool
 edata_cache_init(edata_cache_t *edata_cache, base_t *base) {
 	edata_avail_new(&edata_cache->avail);

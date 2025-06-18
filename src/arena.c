@@ -1731,7 +1731,7 @@ arena_new(tsdn_t *tsdn, unsigned ind, const arena_config_t *config) {
 	arena_t *arena;
 	base_t *base;
 
-	if (ind == 0) {
+	if (ind == 0) { // we are initializing a0, so use b0
 		base = b0get();
 	} else {
 		base = base_new(tsdn, ind, config->extent_hooks,
@@ -1800,7 +1800,7 @@ arena_new(tsdn_t *tsdn, unsigned ind, const arena_config_t *config) {
 
 	arena->base = base;
 	/* Set arena before creating background threads. */
-	arena_set(ind, arena);
+	arena_set(ind, arena); // store new arean at index in global array
 	arena->ind = ind;
 
 	/* Init the name. */

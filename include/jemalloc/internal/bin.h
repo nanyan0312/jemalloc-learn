@@ -61,6 +61,11 @@ bin_batching_test_after_unlock(unsigned slab_dalloc_count, bool list_empty) {
  * allocations.
  */
 typedef struct bin_s bin_t;
+/*
+Used for all bins, regardless of size class.
+Handles allocation and deallocation for its size class.
+For large size classes (not batched), only bin_t is used.
+*/
 struct bin_s {
 	/* All operations on bin_t fields require lock ownership. */
 	malloc_mutex_t		lock;
@@ -97,6 +102,15 @@ struct bin_remote_free_data_s {
 };
 
 typedef struct bin_with_batch_s bin_with_batch_t;
+/*
+bin_with_batch_t is a superset of bin_t:
+The first part of bin_with_batch_t is a bin_t.
+Additional fields for batching are appended after the bin_t fields.
+
+Used only for small size classes that support batching (typically ≤192 bytes, configurable).
+Supports batched remote frees: allows multiple objects to be freed in a single operation, improving performance for small objects.
+Used when arena_bin_has_batch(binind) is true for a given bin index.
+*/
 struct bin_with_batch_s {
 	bin_t bin;
 	batcher_t remote_frees;

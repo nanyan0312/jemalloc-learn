@@ -710,6 +710,112 @@ label_return:
  * that size is rounded up to the nearest multiple of alignment to avoid false
  * sharing.
  */
+/*
+nanya:
+
+## Summary of allocation functions related to base allocator
+
+To summarize, here are the relationships:  
+base_t → block_t → edata_t.  
+The base allocator (`base_t`) has a linked list of blocks (`block_t`), each block contains an extent described by an `edata_t`. 
+The base allocator also maintains per-size-class **heaps** of available extents (`edata_t`), not just a direct array of blocks.
+
+---
+
+### 1. Extent Level Allocation
+
+- `base_extent_bump_alloc_helper`, `base_extent_bump_alloc_post`, and `base_extent_bump_alloc` operate at the extent level. They are base-specific, meaning they are used when we want to allocate space (for internal metadata) within an extent managed by a base allocator.
+- `base_extent_bump_alloc_helper` updates the `edata_t` to reflect the new allocation (moves the bump pointer and reduces the available size). No actual system memory allocation occurs here.
+- `base_extent_bump_alloc_post` may re-insert the extent into the base allocator’s per-size-class heap if there is still space left after the allocation.
+- `base_extent_bump_alloc` is a thin wrapper that calls both `base_extent_bump_alloc_helper` and `base_extent_bump_alloc_post`.
+
+---
+
+### 2. Block Level Allocation
+
+- `base_block_alloc` is the raw function that allocates a new `block_t` (a new memory mapping from the system) and initializes its extent (`edata_t`) with the right address and size. This is a real, new system allocation.
+- `base_extent_alloc` is a thin wrapper around `base_block_alloc`. It calls `base_block_alloc` to allocate a new block for a given base allocator, adds the new block to the base allocator’s block list, and returns the new extent (`edata_t`) for further allocation.
+
+---
+
+### 3. Base Level Allocation
+
+- `base_new` allocates a brand new base allocator. It internally allocates a new block and bump-allocates a new base inside that new block, and makes the new base manage the new block. This is a rare operation.
+- `base_alloc` is the general-purpose, top-level function to allocate some space within a base allocator. It orchestrates between all the above levels:
+  1. It first checks the base allocator’s per-size-class heaps for an available extent (`edata_t`) that is large enough for the requested size. If found, it pops that extent and uses it.
+  2. If not, it calls `base_extent_alloc` to allocate a new block/extent within the base allocator for the requested size.
+  3. Either way, it now has an available extent suitable for the requested size, and calls `base_extent_bump_alloc` to bump-allocate the requested size within the chosen extent.
+
+---
+
+## Detailed and Graphical Call Diagram
+
+```
+[base_alloc]
+   |
+   |-- checks per-size-class heaps (base->avail[]) for available extent (edata_t)
+   |      |
+   |      |-- if found: use it
+   |      |-- if not found:
+   |             |
+   |             v
+   |        [base_extent_alloc]
+   |             |
+   |             v
+   |        [base_block_alloc]
+   |             |
+   |             v
+   |        (allocates new block_t, initializes edata_t)
+   |             |
+   |             v
+   |        (adds block to base_t's block list)
+   |             |
+   |             v
+   |        (returns new edata_t)
+   |
+   v
+[base_extent_bump_alloc]
+   |
+   |-- calls [base_extent_bump_alloc_helper] (does bump allocation: advances bump pointer, reduces available size)
+   |-- calls [base_extent_bump_alloc_post] (re-inserts extent into heap if space remains)
+   |
+   v
+(returns pointer to allocated memory)
+```
+
+### Base Allocator Creation
+
+```
+[base_new]
+   |
+   v
+[base_block_alloc]  (allocates block for base_t)
+   |
+   v
+[base_extent_bump_alloc_helper] (allocates base_t struct inside block)
+   |
+   v
+[base_extent_bump_alloc_post] (inserts extent into heap if space remains)
+   |
+   v
+(setup: base_t manages the new block)
+```
+
+### Data Structure Relationships
+
+```
+base_t
+  |
+  |-- blocks (linked list of block_t)
+  |      |
+  |      +-- block_t
+  |             |
+  |             +-- edata_t (describes extent in block)
+  |
+  |-- avail[] (per-size-class heaps of available edata_t)
+```
+
+*/
 void *
 base_alloc(tsdn_t *tsdn, base_t *base, size_t size, size_t alignment) {
 	return base_alloc_impl(tsdn, base, size, alignment, NULL, NULL);
