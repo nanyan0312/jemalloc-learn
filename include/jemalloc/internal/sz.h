@@ -32,17 +32,28 @@ typedef unsigned szind_t;
 /*
  * sz_pind2sz_tab encodes the same information as could be computed by
  * sz_pind2sz_compute().
+ * 
+ * nanya: this maps from some 0-started index to size class sizes that are page-multiple.
+ * pind = page index
+ * ther are SC_NPSIZES entries, SC_NPSIZES is the number of page-multiple size classes.
+ * 
+ * currently its unclear to me how this index is useful or calculated during actual allocations.
  */
 extern size_t sz_pind2sz_tab[SC_NPSIZES + 1];
 /*
  * sz_index2size_tab encodes the same information as could be computed (at
  * unacceptable cost in some code paths) by sz_index2size_compute().
+ * 
+ * nanya: maps from size class index to the size.
+ * there are SC_NSIZES entries, SC_NSIZES is the total number of size classes.
  */
 extern size_t sz_index2size_tab[SC_NSIZES];
 /*
  * sz_size2index_tab is a compact lookup table that rounds request sizes up to
  * size classes.  In order to reduce cache footprint, the table is compressed,
  * and all accesses are via sz_size2index().
+ * 
+ * 
  */
 extern uint8_t sz_size2index_tab[];
 
@@ -54,6 +65,7 @@ extern size_t sz_large_pad;
 
 extern void sz_boot(const sc_data_t *sc_data, bool cache_oblivious);
 
+// nanya: Converts a page-aligned size to an index into the page size class table, i.e. sz_pind2sz_tab
 JEMALLOC_ALWAYS_INLINE pszind_t
 sz_psz2ind(size_t psz) {
 	assert(psz > 0);

@@ -1384,6 +1384,11 @@ tcache_ncached_max_compute(szind_t szind) {
 	}
 
 	unsigned candidate;
+	// "slots" == objects stored in a slab
+	// candidate is calculated max number of objects that can be stored in each slab
+	// opt_lg_tcache_nslots_mul is default to 2, so in a slab, there is  slab_nregs regions,
+	// each region of the same size class size, this equation is saying we default set max objects
+	// in a slab to be twice the number of regions.
 	if (opt_lg_tcache_nslots_mul < 0) {
 		candidate = slab_nregs >> (-opt_lg_tcache_nslots_mul);
 	} else {
@@ -1413,10 +1418,14 @@ tcache_bin_info_compute(cache_bin_info_t tcache_bin_info[TCACHE_NBINS_MAX]) {
 	 * than tcache_nbins, no items will be cached.
 	 */
 	for (szind_t i = 0; i < TCACHE_NBINS_MAX; i++) {
+		// For each bin, it determines the maximum number of objects that can be cached in a slab,
+		// either A default value if set (tcache_get_default_ncached_max_set(i))
+		// or A computed value based on the bin size (tcache_ncached_max_compute(i))
 		unsigned ncached_max = tcache_get_default_ncached_max_set(i) ?
 		    (unsigned)tcache_get_default_ncached_max()[i].ncached_max:
 		    tcache_ncached_max_compute(i);
 		assert(ncached_max <= CACHE_BIN_NCACHED_MAX);
+		// store the max number in tcache_bin_info
 		cache_bin_info_init(&tcache_bin_info[i],
 		    (cache_bin_sz_t)ncached_max);
 	}
@@ -1874,7 +1883,10 @@ tcaches_destroy(tsd_t *tsd, unsigned ind) {
 bool
 tcache_boot(tsdn_t *tsdn, base_t *base) {
 	global_do_not_change_tcache_maxclass = sz_s2u(opt_tcache_max);
-	assert(global_do_not_change_tcache_maxclass <= TCACHE_MAXCLASS_LIMIT);
+	assert(global_do_not_change_tcache_maxclass <= TCACHE_MAXCLASS_LIMIT); // tcache max size class 8M
+	// sz_size2index translates the max tcache size class into that size class's index into the global sc array.
+	// global_do_not_change_tcache_nbins is # of bins in each tcache, this seems to assume there is one bin per 
+	// size class in tcache(no multiple shards of the same bin/size class), so # of bins == index of max size class bin + 1 (since index starts from 0)
 	global_do_not_change_tcache_nbins =
 	    sz_size2index(global_do_not_change_tcache_maxclass) + 1;
 	/*
@@ -1883,6 +1895,22 @@ tcache_boot(tsdn_t *tsdn, base_t *base) {
 	 * opt_tcache_ncached_max should not be modified and should always be
 	 * accessed using tcache_get_default_ncached_max.
 	 */
+
+	// nanya: compute and store the max # of objects that can be stored in each slab of each bin, for each different size class bin
+	/*
+	* nanya:
+	* When a thread cache (tcache) bin reaches its maximum capacity (ncached_max),
+	* jemalloc implements an overflow handling mechanism where it flushes approximately half of the cached 
+	* objects back to the arena to make space for new objects. This flushing process requires temporary lock 
+	* acquisition and object movement between caches, which is a relatively expensive operation but necessary 
+	* to prevent any single thread from hoarding too much memory. The system maintains a balance between thread-local 
+	* allocation speed and global memory availability by ensuring that while threads can cache frequently used 
+	* objects for fast access, they must periodically return excess objects to the shared arena for other threads to 
+	* use. This mechanism is crucial for jemalloc's efficient memory management, as it prevents memory fragmentation 
+	* and ensures fair resource distribution across all threads while still maintaining the performance benefits of 
+	* thread-local caching.
+
+	*/
 	tcache_bin_info_compute(opt_tcache_ncached_max);
 
 	if (malloc_mutex_init(&tcaches_mtx, "tcaches", WITNESS_RANK_TCACHES,

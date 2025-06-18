@@ -1847,12 +1847,159 @@ malloc_init_hard_needed(void) {
 	return true;
 }
 
+/*
+ * nanya: Visualizing the relationships between:
+ * - arena
+ * - base
+ * - bin
+ * - slab
+ * - region
+ * - extent
+
+
+Arena
+├── Base Allocator (base_t)
+│   └── Base Blocks (base_block_t)
+│       └── Metadata allocations
+├── Bins (sharded by size class)
+│   ├── Bin 0 (size class 0)
+│   │   ├── Current Slab (slabcur)
+│   │   │   ├── edata_t
+│   │   │   │   ├── e_addr: pointer to slab memory
+│   │   │   │   ├── e_size_esn: slab size
+│   │   │   │   ├── e_bits: metadata flags
+│   │   │   │   │   ├── slab flag
+│   │   │   │   │   ├── committed flag
+│   │   │   │   │   ├── zeroed flag
+│   │   │   │   │   └── state flag
+│   │   │   │   └── e_slab_data
+│   │   │   │       └── bitmap: tracks free/used regions
+│   │   │   ├── Region 0 (size = bin's reg_size)
+│   │   │   ├── Region 1
+│   │   │   └── ... (nregs regions)
+│   │   ├── Non-full Slabs (edata_list_active)
+│   │   │   ├── edata_t → edata_t → edata_t → ...
+│   │   │   │   ├── ql_link_active: list linkage
+│   │   │   │   ├── e_addr: pointer to slab memory
+│   │   │   │   ├── e_size_esn: slab size
+│   │   │   │   ├── e_bits: metadata flags
+│   │   │   │   └── e_slab_data
+│   │   │   │       └── bitmap: tracks free/used regions
+│   │   │   └── Each edata_t contains:
+│   │   │       ├── Free Regions
+│   │   │       │   ├── Region 0
+│   │   │       │   ├── Region 2
+│   │   │       │   └── Region 5
+│   │   │       └── Used Regions
+│   │   │           ├── Region 1
+│   │   │           ├── Region 3
+│   │   │           └── Region 4
+│   │   └── Full Slabs (edata_list_active)
+│   │       ├── edata_t → edata_t → edata_t → ...
+│   │       │   ├── ql_link_active: list linkage
+│   │       │   ├── e_addr: pointer to slab memory
+│   │       │   ├── e_size_esn: slab size
+│   │       │   ├── e_bits: metadata flags
+│   │       │   └── e_slab_data
+│   │       │       └── bitmap: all bits set (all regions used)
+│   │       └── Each edata_t contains:
+│   │           └── All Regions Used
+│   └── ...
+└── Large Allocations (edata_list_active)
+    ├── edata_t → edata_t → edata_t → ...
+    │   ├── ql_link_active: list linkage
+    │   ├── e_addr: pointer to allocation
+    │   ├── e_size_esn: allocation size
+    │   └── e_bits: metadata flags
+    └── Each edata_t contains:
+        └── Single large region
+
+
+Descriptions of this visualization:
+
+1. **Arena Structure**
+   - An arena is the top-level memory management unit
+   - It contains a base allocator for metadata and a collection of bins for small allocations
+   - It also manages large allocations directly
+
+2. **Base Allocator**
+   - The base allocator (`base_t`) manages metadata allocations
+   - It uses base blocks (`base_block_t`) to track and manage these allocations
+   - This is separate from the main memory allocation system to avoid circular dependencies
+
+3. **Bins and Size Classes**
+   - Each bin corresponds to a specific size class
+   - Bins are sharded to reduce contention between threads
+   - Only size classes < 4*PAGE are managed via bins (binnable)
+   - Each bin maintains three types of slabs:
+     - Current slab (slabcur)
+     - Non-full slabs
+     - Full slabs
+
+4. **Slab Management**
+   - Each slab is represented by an `edata_t` structure
+   - The `edata_t` contains:
+     - A pointer to the actual memory (`e_addr`)
+     - Size information (`e_size_esn`)
+     - Metadata flags (`e_bits`)
+     - A bitmap to track free/used regions (`e_slab_data`)
+   - Slabs are organized in three states:
+     - Current (slabcur): Single `edata_t` for the most recently allocated slab
+     - Non-full: List of `edata_t` structures, each with some free regions
+     - Full: List of `edata_t` structures, all regions used
+
+5. **Region Organization**
+   - Each slab is divided into equal-sized regions
+   - Region size = bin's size class
+   - Number of regions = slab_size / reg_size
+   - A bitmap tracks which regions are free/used
+   - Regions are contiguous within a slab
+
+6. **List Structures**
+   - Non-full slabs are maintained in an `edata_list_active`
+   - Full slabs are maintained in an `edata_list_active`
+   - Large allocations are maintained in an `edata_list_active`
+   - Each `edata_t` in these lists contains a `ql_link_active` for list linkage
+
+7. **Large Allocations**
+   - Large allocations are managed directly by the arena
+   - Each large allocation is a single `edata_t`
+   - Unlike slabs, large allocations are not divided into regions
+   - They are also maintained in an `edata_list_active`
+
+8. **Memory Layout**
+   - Slab size is typically a multiple of the page size
+   - Region size is determined by the size class
+   - The number of regions in a slab is fixed based on these sizes
+   - The bitmap size is calculated based on the number of regions
+
+9. **State Transitions**
+   - A slab starts as the current slab (slabcur)
+   - When it has some free regions, it moves to the non-full list
+   - When all regions are used, it moves to the full list
+   - When all regions are freed, it can be reused or deallocated
+
+10. **Thread Safety**
+    - Bins are sharded to reduce contention
+    - Each shard has its own set of slabs
+    - This allows multiple threads to allocate from the same size class without contention
+
+This structure allows jemalloc to:
+- Efficiently manage memory at different scales
+- Minimize fragmentation
+- Support fast allocation/deallocation
+- Maintain good cache locality
+- Handle both small and large allocations effectively
+- Scale well with multiple threads
+
+*/
 static bool
 malloc_init_hard_a0_locked(void) {
 	malloc_initializer = INITIALIZER; // nanya: set this thread as the initiailzer
 
 	JEMALLOC_DIAGNOSTIC_PUSH
 	JEMALLOC_DIAGNOSTIC_IGNORE_MISSING_STRUCT_FIELD_INITIALIZERS
+	// nanya: sc stands for size class
 	sc_data_t sc_data = {0};
 	JEMALLOC_DIAGNOSTIC_POP
 
@@ -1863,8 +2010,8 @@ malloc_init_hard_a0_locked(void) {
 	 * before sz_boot and bin_info_boot, which assume that the values they
 	 * read out of sc_data_global are final.
 	 */
-	sc_boot(&sc_data);
-	unsigned bin_shard_sizes[SC_NBINS];
+	sc_boot(&sc_data); // size class initialization
+	unsigned bin_shard_sizes[SC_NBINS]; // bin shard sizes, one shard size per bin, say if first element is 5, that means the first bin will have 5 shards.
 	bin_shard_sizes_boot(bin_shard_sizes);
 	/*
 	 * prof_boot0 only initializes opt_prof_prefix.  We need to do it before
@@ -1877,9 +2024,9 @@ malloc_init_hard_a0_locked(void) {
 	char readlink_buf[PATH_MAX + 1];
 	readlink_buf[0] = '\0';
 	malloc_conf_init(&sc_data, bin_shard_sizes, readlink_buf);
-	san_init(opt_lg_san_uaf_align);
-	sz_boot(&sc_data, opt_cache_oblivious);
-	bin_info_boot(&sc_data, bin_shard_sizes);
+	san_init(opt_lg_san_uaf_align); // initialize the sanitizer
+	sz_boot(&sc_data, opt_cache_oblivious); // initialize the size class lookup table
+	bin_info_boot(&sc_data, bin_shard_sizes); // intialize global array of bin information. so far these arrays are all global
 
 	if (opt_stats_print) {
 		/* Print statistics at exit. */
@@ -1897,6 +2044,8 @@ malloc_init_hard_a0_locked(void) {
 	if (pages_boot()) {
 		return true;
 	}
+
+	// allocate global singleton base allocator b0
 	if (base_boot(TSDN_NULL)) {
 		return true;
 	}
@@ -1904,15 +2053,34 @@ malloc_init_hard_a0_locked(void) {
 	if (emap_init(&arena_emap_global, b0get(), /* zeroed */ true)) {
 		return true;
 	}
+
+	// In summary, while DSS is supported in jemalloc, it's not typically the primary allocation method. 
+	// The default configuration uses mmap() as the primary allocation method, with DSS as a secondary option. 
+	// This approach provides better compatibility across platforms and more predictable memory management behavior.
 	if (extent_boot()) {
 		return true;
 	}
+
+	// just initialize a mutex
 	if (ctl_boot()) {
 		return true;
 	}
 	if (config_prof) {
 		prof_boot1();
 	}
+
+	/*
+	 HPA (Huge Page Allocator) is in jemalloc:
+	 HPA is a specialized memory allocator in jemalloc that manages memory in huge page-sized chunks. 
+	 Purpose:
+	 Manages memory allocations using huge pages (typically 2MB on x86_64)
+	 Optimizes memory usage for large allocations
+	 Reduces TLB misses and improves memory access patterns
+	 Usage:
+	Used as an alternative to the standard page allocator (PAC)
+	Can be enabled/disabled per arena
+	Falls back to PAC for allocations it cannot handle
+	*/
 	if (opt_hpa && !hpa_supported()) {
 		malloc_printf("<jemalloc>: HPA not supported in the current "
 		    "configuration; %s.",
@@ -1923,9 +2091,14 @@ malloc_init_hard_a0_locked(void) {
 			opt_hpa = false;
 		}
 	}
+
+	// initialize some common helper arrays used by all arenas
+	// initialize central PAC.
 	if (arena_boot(&sc_data, b0get(), opt_hpa)) {
 		return true;
 	}
+	// initialize max # of bins in each tcache.
+	// initialize max # of objects in each slab in each bin in tcache
 	if (tcache_boot(TSDN_NULL, b0get())) {
 		return true;
 	}

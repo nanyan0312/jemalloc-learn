@@ -625,7 +625,7 @@ edata_binit(edata_t *edata, void *addr, size_t bsize, uint64_t sn,
     bool reused) {
 	edata_arena_ind_set(edata, (1U << MALLOCX_ARENA_BITS) - 1);
 	edata_addr_set(edata, addr);
-	edata_bsize_set(edata, bsize);
+	edata_bsize_set(edata, bsize); // actual extent size, excluding preceding header
 	edata_slab_set(edata, false);
 	edata_szind_set(edata, SC_NSIZES);
 	edata_sn_set(edata, sn);

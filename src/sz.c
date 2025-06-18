@@ -71,6 +71,13 @@ sz_boot_pind2sz_tab(const sc_data_t *sc_data) {
 			pind++;
 		}
 	}
+
+	/* nanya:
+	* Array Size Guarantee: The sz_pind2sz_tab array is declared with size SC_NPSIZES+1, so it needs to be fully initialized to avoid any uninitialized elements.
+	* Fallback Values: The second loop sets a fallback value for any remaining indices in the array. 
+	* This ensures that if someone tries to access a page index that doesn't correspond to a valid page-multiple size class, 
+	* they'll get a reasonable value (the maximum large class size plus one page) rather than an uninitialized value.
+	*/
 	for (int i = pind; i <= (int)SC_NPSIZES; i++) {
 		sz_pind2sz_tab[pind] = sc_data->large_maxclass + PAGE;
 	}
@@ -91,24 +98,43 @@ sz_boot_index2size_tab(const sc_data_t *sc_data) {
 /*
  * To keep this table small, we divide sizes by the tiny min size, which gives
  * the smallest interval for which the result can change.
+ * 
+ * nanya: SC_LOOKUP_MAXCLASS >> SC_LG_TINY_MIN is SC_LOOKUP_MAXCLASS / 2^SC_LG_TINY_MIN, so 4096 / 8 = 512
  */
 JEMALLOC_ALIGNED(CACHELINE)
 uint8_t sz_size2index_tab[(SC_LOOKUP_MAXCLASS >> SC_LG_TINY_MIN) + 1];
 
 static void
 sz_boot_size2index_tab(const sc_data_t *sc_data) {
-	size_t dst_max = (SC_LOOKUP_MAXCLASS >> SC_LG_TINY_MIN) + 1;
+	size_t dst_max = (SC_LOOKUP_MAXCLASS >> SC_LG_TINY_MIN) + 1; // 513
 	size_t dst_ind = 0;
 	for (unsigned sc_ind = 0; sc_ind < SC_NSIZES && dst_ind < dst_max;
 	    sc_ind++) {
 		const sc_t *sc = &sc_data->sc[sc_ind];
 		size_t sz = (ZU(1) << sc->lg_base)
-		    + (ZU(sc->ndelta) << sc->lg_delta);
-		size_t max_ind = ((sz + (ZU(1) << SC_LG_TINY_MIN) - 1)
-				   >> SC_LG_TINY_MIN);
+		    + (ZU(sc->ndelta) << sc->lg_delta); // suppose 8, 16, 32, 64, 80, 96, 112, 128 .. 
+		size_t max_ind = ((sz + (ZU(1) << SC_LG_TINY_MIN) - 1) 
+				   >> SC_LG_TINY_MIN); // (8/16/32/... + 7)/8 = 1,2,4,8,10,12,14,16....
 		for (; dst_ind <= max_ind && dst_ind < dst_max; dst_ind++) {
 			assert(sc_ind < 1 << (sizeof(uint8_t) * 8));
 			sz_size2index_tab[dst_ind] = (uint8_t)sc_ind;
+			/* nanya: this table first few entries look like:
+			 * 0 -> 0
+			 * 1 -> 0
+			 * 2 -> 1
+			 * 3 -> 2
+			 * 4 -> 2
+			 * 5 -> 3
+			 * 6 -> 3
+			 * 7 -> 3
+			 * 8 -> 3
+			 * ....
+			 * so to use this table, we do: 
+			 * 1. requested size divided by SC_LG_TINY_MIN to get the index into the table, say requests is for 24 bytes, so index is 3 into this table
+			 * 2. The table entry gives the size class index to use, which is size class number 2
+			 * 3. Then use the size class index to find the size class in sc_data->sc[] array. index 2 is entry # 3 which is 32 bytes
+			 * 
+			*/
 		}
 	}
 }

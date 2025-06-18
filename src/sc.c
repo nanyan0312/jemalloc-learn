@@ -67,15 +67,21 @@ size_class(
 	if (index == 0) {
 		assert(!sc->psz);
 	}
+
+	// nanya: size classes < 4*PAGE are binnable, allocated from slabs
 	if (size < (ZU(1) << (lg_page + lg_ngroup))) {
 		sc->bin = true;
+		// nanya: size of slabs for this binnable size class, equal to the least common multiple of the
+		// page size and size class size.  
 		sc->pgs = slab_size(lg_page, lg_base, lg_delta, ndelta);
 	} else {
 		sc->bin = false;
 		sc->pgs = 0;
 	}
+
+	// we only support look ups for size classes <= PAGE
 	if (size <= (ZU(1) << lg_max_lookup)) {
-		sc->lg_delta_lookup = lg_delta;
+		sc->lg_delta_lookup = lg_delta; // not clear how lg_delta_lookup will be used.
 	} else {
 		sc->lg_delta_lookup = 0;
 	}
@@ -92,12 +98,12 @@ size_classes(
 	int ptr_bits = (1 << lg_ptr_size) * 8;
 	int ngroup = (1 << lg_ngroup);
 	int ntiny = 0;
-	int nlbins = 0;
+	int nlbins = 0; // number of size classes that support look up?
 	int lg_tiny_maxclass = (unsigned)-1;
-	int nbins = 0;
-	int npsizes = 0;
+	int nbins = 0; // number of binnable siz classes
+	int npsizes = 0; // number of size classes that are page-multiple
 
-	int index = 0;
+	int index = 0; // indexing into the array of all size classes
 
 	int ndelta = 0;
 	int lg_base = lg_tiny_min;
@@ -108,6 +114,8 @@ size_classes(
 	size_t small_maxclass = 0;
 	int lg_large_minclass = 0;
 	size_t large_maxclass = 0;
+
+	// belowe we initialize each size class e.g. sc_t, one by one
 
 	/* Tiny size classes. */
 	while (lg_base < lg_quantum) {
@@ -170,7 +178,7 @@ size_classes(
 	lg_base = lg_base + lg_ngroup;
 	while (lg_base < ptr_bits - 1) {
 		ndelta = 1;
-		int ndelta_limit;
+		int ndelta_limit; // how many size classes in this group
 		if (lg_base == ptr_bits - 2) {
 			ndelta_limit = ngroup - 1;
 		} else {

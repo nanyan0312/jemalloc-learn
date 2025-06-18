@@ -21,8 +21,8 @@ typedef struct tcaches_s tcaches_t;
 
 #define TCACHE_LG_MAXCLASS_LIMIT 23 /* tcache_max = 8M */
 #define TCACHE_MAXCLASS_LIMIT ((size_t)1 << TCACHE_LG_MAXCLASS_LIMIT)
-#define TCACHE_NBINS_MAX (SC_NBINS + SC_NGROUP *			\
-    (TCACHE_LG_MAXCLASS_LIMIT - SC_LG_LARGE_MINCLASS) + 1)
+#define TCACHE_NBINS_MAX (SC_NBINS + SC_NGROUP *			\ // The maximum number of bins in the thread cache
+    (TCACHE_LG_MAXCLASS_LIMIT - SC_LG_LARGE_MINCLASS) + 1) // SC_NBINS is # of binnable small size classes, the rest is large size classes smaller than 8M
 #define TCACHE_GC_NEIGHBOR_LIMIT ((uintptr_t)1 << 21) /* 2M */
 #define TCACHE_GC_INTERVAL_NS ((uint64_t)10 * KQU(1000000)) /* 10ms */
 #define TCACHE_GC_SMALL_NBINS_MAX ((SC_NBINS > 8) ? (SC_NBINS >> 3) : 1)

@@ -36,9 +36,33 @@ ssize_t opt_muzzy_decay_ms = MUZZY_DECAY_MS_DEFAULT;
 static atomic_zd_t dirty_decay_ms_default;
 static atomic_zd_t muzzy_decay_ms_default;
 
+// nanya:  a global extent map (emap_t) instance that serves as the central mapping structure for all memory allocations in jemalloc. 
 emap_t arena_emap_global;
+// nanya:
+// This is a global singleton instance of pa_central_t (Page Allocator Central)
+// It serves as a central coordinator for page allocation across all arenas
 static pa_central_t arena_pa_central_global;
 
+/*
+nanya:
+
+// Let's say we have a slab at address 0x1000
+// And we're deallocating a pointer at 0x1040
+void *slab_addr = 0x1000;
+void *ptr = 0x1040;
+
+// Calculate the difference
+size_t diff = (size_t)((uintptr_t)ptr - (uintptr_t)slab_addr);
+// diff = 0x40 (64 bytes)
+
+// Without optimization, we would do:
+// size_t regind = diff / 32;  // Division is expensive
+
+// With arena_binind_div_info optimization:
+size_t regind = div_compute(&arena_binind_div_info[3], diff);
+// This uses pre-computed division parameters to avoid actual division
+// Result: regind = 2 (meaning this is the third region in the slab)
+*/
 div_info_t arena_binind_div_info[SC_NBINS];
 
 size_t opt_oversize_threshold = OVERSIZE_THRESHOLD_DEFAULT;
@@ -1717,6 +1741,7 @@ arena_new(tsdn_t *tsdn, unsigned ind, const arena_config_t *config) {
 		}
 	}
 
+	// the actual bins are allocated at the tail end of each arena_t
 	size_t arena_size = ALIGNMENT_CEILING(sizeof(arena_t), CACHELINE) +
 	    sizeof(bin_with_batch_t) * bin_info_nbatched_bins
 	    + sizeof(bin_t) * bin_info_nunbatched_bins;
@@ -1911,6 +1936,9 @@ arena_boot(sc_data_t *sc_data, base_t *base, bool hpa) {
 	JEMALLOC_SUPPRESS_WARN_ON_USAGE(
 	uint32_t cur_offset = (uint32_t)offsetof(arena_t, all_bins);
 	)
+	// nanya: each arean has at least one bin for each size class
+	// this loop calculates, within an arena, where does each size's bin start? taking
+	// into consideration if bins are batched or not.
 	for (szind_t i = 0; i < SC_NBINS; i++) {
 		arena_bin_offsets[i] = cur_offset;
 		uint32_t bin_sz = (i < bin_info_nbatched_sizes
@@ -1918,7 +1946,7 @@ arena_boot(sc_data_t *sc_data, base_t *base, bool hpa) {
 		cur_offset += (uint32_t)bin_infos[i].n_shards * bin_sz;
 	}
 	return pa_central_init(&arena_pa_central_global, base, hpa,
-	    &hpa_hooks_default);
+	    &hpa_hooks_default); // no op if hpa is false
 }
 
 void

@@ -64,6 +64,7 @@ typedef bool (extent_split_t)(extent_hooks_t *, void *, size_t, size_t, size_t,
 typedef bool (extent_merge_t)(extent_hooks_t *, void *, size_t, void *, size_t,
     bool, unsigned);
 
+// nanya: A structure that defines a set of callback functions for managing memory extents
 struct extent_hooks_s {
 	extent_alloc_t		*alloc;
 	extent_dalloc_t		*dalloc;

@@ -21,6 +21,7 @@
 
 extern const extent_hooks_t ehooks_default_extent_hooks;
 
+// nanya: wrapper for extent_hooks_t. Provides thread-safe access to extent hooks
 typedef struct ehooks_s ehooks_t;
 struct ehooks_s {
 	/*

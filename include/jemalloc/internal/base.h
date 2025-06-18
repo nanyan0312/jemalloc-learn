@@ -33,6 +33,10 @@ extern metadata_thp_mode_t opt_metadata_thp;
 extern const char *const metadata_thp_mode_names[];
 
 /* Embedded at the beginning of every block of base-managed virtual memory. */
+/*
+ * nanya: base_block_t represents a block of memory managed by the base allocator
+
+*/
 typedef struct base_block_s base_block_t;
 struct base_block_s {
 	/* Total size of block's virtual memory mapping. */
@@ -45,6 +49,11 @@ struct base_block_s {
 	edata_t edata;
 };
 
+/*
+ * nanya: base_t is the base allocator that manages metadata allocations
+ * The base allocator is used to allocate memory for arena metadata
+ * Each arena has a base_t pointer (arena->base) for metadata allocations
+*/
 typedef struct base_s base_t;
 struct base_s {
 	/*
@@ -76,10 +85,12 @@ struct base_s {
 	base_block_t *blocks;
 
 	/* Heap of extents that track unused trailing space within blocks. */
+	// This is an array of heaps, one for each size class (SC_NSIZES)
+	// Each entry contains a heap of edata_t structures representing available memory chunks of that size class
 	edata_heap_t avail[SC_NSIZES];
 
 	/* Contains reusable base edata (used by tcache_stacks currently). */
-	edata_avail_t edata_avail;
+	edata_avail_t edata_avail; // this is a list
 
 	/* Stats, only maintained if config_stats. */
 	size_t allocated;

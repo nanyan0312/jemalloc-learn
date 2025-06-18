@@ -19,7 +19,7 @@
 #ifdef JEMALLOC_HAVE_VM_MAKE_TAG
 #define PAGES_FD_TAG VM_MAKE_TAG(254U)
 #else
-#define PAGES_FD_TAG -1
+#define PAGES_FD_TAG -1 // for anon mappins
 #endif
 #if defined(JEMALLOC_HAVE_PRCTL) && defined(JEMALLOC_PAGEID)
 #include <sys/prctl.h>
@@ -170,6 +170,23 @@ os_pages_map(void *addr, size_t size, size_t alignment, bool *commit) {
 #endif
 		int prot = *commit ? PAGES_PROT_COMMIT : PAGES_PROT_DECOMMIT;
 
+/*
+ * nanya:
+ Memory Allocation Methods in Linux:
+a) brk/sbrk:
+Adjusts the program break (end of data segment)
+Simple but limited - can only grow/shrink at the end
+Not suitable for large allocations
+Can cause fragmentation
+Not thread-safe
+b) mmap:
+More flexible - can allocate memory anywhere
+Supports various flags and options
+Better for large allocations
+Thread-safe
+Can map files or anonymous memory
+Supports alignment requirements
+*/
 		ret = mmap(addr, size, prot, flags, PAGES_FD_TAG, 0);
 	}
 	assert(ret != NULL);
@@ -177,6 +194,8 @@ os_pages_map(void *addr, size_t size, size_t alignment, bool *commit) {
 	if (ret == MAP_FAILED) {
 		ret = NULL;
 	} else if (addr != NULL && ret != addr) {
+		// nanya: The check ret != addr is only relevant when addr is non-NULL. When addr is NULL:
+		// The system is free to choose any address
 		/*
 		 * We succeeded in mapping memory, but not in the right place.
 		 */
@@ -327,7 +346,8 @@ pages_map(void *addr, size_t size, size_t alignment, bool *commit) {
 		return ret;
 	}
 	assert(addr == NULL);
-	if (ALIGNMENT_ADDR2OFFSET(ret, alignment) != 0) {
+	if (ALIGNMENT_ADDR2OFFSET(ret, alignment) != 0) { // Return the offset between ret address and the nearest aligned address at or below ret address.
+
 		os_pages_unmap(ret, size);
 		return pages_map_slow(size, alignment, commit);
 	}

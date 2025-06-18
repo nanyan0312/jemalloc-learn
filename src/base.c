@@ -18,6 +18,20 @@
 /******************************************************************************/
 /* Data. */
 
+// nanya: b0 is the global base allocator instance in jemalloc. Let me explain its significance:
+// It's the primary base allocator used for metadata allocations
+// Used to allocate memory for internal jemalloc structures
+// Created during jemalloc's boot process
+// Uses default extent hooks
+// Has index 0 (first arena)
+// Used for metadata allocations
+/*
+Used to allocate memory for:
+Internal metadata structures
+Arena structures
+Cache structures
+Other jemalloc internal components
+*/
 static base_t *b0;
 
 metadata_thp_mode_t opt_metadata_thp = METADATA_THP_DEFAULT;
@@ -128,6 +142,7 @@ base_edata_is_reused(edata_t *edata) {
 	return edata_guarded_get(edata);
 }
 
+// nanya: initialize the given extent
 static void
 base_edata_init(size_t *extent_sn_next, edata_t *edata, void *addr,
     size_t size) {
@@ -189,6 +204,31 @@ base_auto_thp_switch(tsdn_t *tsdn, base_t *base) {
 	}
 }
 
+// nanya:  This function is a helper function used in jemalloc's base allocator to handle memory allocation within an extent.
+// It performs bump allocation within an extent (a contiguous block of memory)
+/*
+This function does "bump allocation" within an extent(edata_t).
+This implies that the given extent is managed by a base allocator, e.g. base->blocks 
+Note that the global base allocator b0 itself is allocated within an (first ever) extent
+
+1. Does edata->e_addr always point to the next available/free address within the extent?
+Not always.
+edata->e_addr (accessed via edata_addr_get(edata)) is a pointer to the base address of the memory region managed by this edata_t structure.
+In the context of the base allocator (for metadata allocations), e_addr is often updated to point to the next available address within the block, so it can act as a "bump pointer."
+In the context of general extents (user allocations, slabs, etc.), e_addr is the start of the extent, not necessarily the next free address.
+Summary:
+For the base allocator: e_addr can be a moving pointer, tracking the next free address.
+For general extents: e_addr is the base of the extent, not the next free address.
+
+2. Does edata->e_bsize always store the remaining available space size within the extent?
+Not always.
+edata->e_bsize (accessed via edata_bsize_get(edata)) is the size of the memory region that this edata_t currently manages.
+For the base allocator, it can represent the remaining available space in the block (after allocations).
+For general extents, it represents the total size of the extent, not just the free space.
+Summary:
+For the base allocator: e_bsize can be the remaining space.
+
+*/
 static void *
 base_extent_bump_alloc_helper(edata_t *edata, size_t *gap_size, size_t size,
     size_t alignment) {
@@ -201,6 +241,9 @@ base_extent_bump_alloc_helper(edata_t *edata, size_t *gap_size, size_t size,
 	    alignment) - (uintptr_t)edata_addr_get(edata);
 	ret = (void *)((byte_t *)edata_addr_get(edata) + *gap_size);
 	assert(edata_bsize_get(edata) >= *gap_size + size);
+	// Updates the extent's metadata to reflect the new allocation
+	// Adjusts the extent's base address and size
+	// so edata_addr_get always point to the next avaialble address in the extent
 	edata_binit(edata, (void *)((byte_t *)edata_addr_get(edata) +
 	    *gap_size + size), edata_bsize_get(edata) - *gap_size - size,
 	    edata_sn_get(edata), base_edata_is_reused(edata));
@@ -243,13 +286,35 @@ base_alloc_base_edata(tsdn_t *tsdn, base_t *base) {
 	return edata;
 }
 
+/*
+This function handles post-allocation tasks after a bump allocation in the base allocator
+It manages the remaining space in the extent and updates statistics
+
+This function is claled, when the given size has just been allocated by the given base allocator
+from within the given extent. (edata_t)
+This function inserts the given extent into either available per-size-class list, or full but reusuable list
+*/
 static void
 base_extent_bump_alloc_post(tsdn_t *tsdn, base_t *base, edata_t *edata,
     size_t gap_size, void *addr, size_t size) {
 	if (edata_bsize_get(edata) > 0) {
+		// if the extent still has space after the bump allocation, insert it into base allocator's avail array,
+		// specifically in the slot indexed corresponding to the biggest size class that is smaller than remainning space inside extent
 		base_edata_heap_insert(tsdn, base, edata);
 	} else {
 		/* Freed base edata_t stored in edata_avail. */
+		/*
+		nanya:
+		edata_t is specifically for reusing the metadata structures themselves, not the memory they represent
+		When an extent is fully used (no available space), we can reuse its edata_t structure for future allocations
+		exmaple:
+		1. Allocate 4KB extent
+		2. Use all 4KB
+		3. Instead of discarding the edata_t:
+			- Store it in edata_avail
+		4. Next time we need an edata_t:
+			- Reuse from edata_avail instead of allocating new one
+		*/
 		edata_avail_insert(&base->edata_avail, edata);
 	}
 
@@ -296,6 +361,40 @@ base_block_size_ceil(size_t block_size) {
  * Allocate a block of virtual memory that is large enough to start with a
  * base_block_t header, followed by an object of specified size and alignment.
  * On success a pointer to the initialized base_block_t header is returned.
+ * 
+ * example layout of an block_t allocated by this function
+ * 
+ * Base Block (block_t)
++------------------------+
+| base_block_t header    |
+|   +----------------+   |
+|   | size          |   | <- Total size of the block
+|   | next          |   |    (including header)
+|   | edata_t       |   |
+|   |   - e_addr    |   | <- Points to available memory
+|   |   - e_bits    |   |    e_addr = (void *)((byte_t *)block + 
+|   |   - e_size_esn|   |              sizeof(base_block_t))
+|   |   - e_bsize   |   | <- Size of available memory
+|   |   - etc.      |   |    e_bsize = block->size - 
+|   +----------------+   |              sizeof(base_block_t)
++------------------------+
+           |
+           v
++------------------------+
+| Available Memory      |  <- Memory region for
+|   +----------------+  |    metadata allocations
+|   | Metadata       |  |    (size = e_bsize)
+|   | allocations    |  |
+|   | ...            |  |
+|   +----------------+  |
++------------------------+
+
+tsdn - only used to fetch arean to allocate from DSS, jemalloc doesn't use DSS by default(use mmap), so not used.
+base - not used, unless transparent hugh page used as "primary" (THP). THP by default is set to "secondary" (DSS_PREC_DEFAULT dss_prec_secondary), 
+    meaning it will be used as a fallback after mmap
+ind - not used
+pind_last - used to remember the page-multiple size used to allocate the last block, thus allocate the next large size
+
  */
 static base_block_t *
 base_block_alloc(tsdn_t *tsdn, base_t *base, ehooks_t *ehooks, unsigned ind,
@@ -313,6 +412,8 @@ base_block_alloc(tsdn_t *tsdn, base_t *base, ehooks_t *ehooks, unsigned ind,
 	 * HUGEPAGE when using metadata_thp), or a size large enough to satisfy
 	 * the requested size and alignment, whichever is larger.
 	 */
+	// header_size + gap_size is aligned space needef for base_block_t header
+	// usize is the actual space requested by called
 	size_t min_block_size = base_block_size_ceil(sz_psz2u(header_size +
 	    gap_size + usize));
 	pszind_t pind_next = (*pind_last + 1 < sz_psz2ind(SC_LARGE_MAXCLASS)) ?
@@ -320,6 +421,12 @@ base_block_alloc(tsdn_t *tsdn, base_t *base, ehooks_t *ehooks, unsigned ind,
 	size_t next_block_size = base_block_size_ceil(sz_pind2sz(pind_next));
 	size_t block_size = (min_block_size > next_block_size) ? min_block_size
 	    : next_block_size;
+	
+	// actual allocation
+	// tsdn is TSD_NULL
+	// ehooks is fake ehooks
+	// ind is 0
+	// block_size is 'size' input, requested space by caller
 	base_block_t *block = (base_block_t *)base_map(tsdn, ehooks, ind,
 	    block_size);
 	if (block == NULL) {
@@ -348,6 +455,8 @@ base_block_alloc(tsdn_t *tsdn, base_t *base, ehooks_t *ehooks, unsigned ind,
 	block->size = block_size;
 	block->next = NULL;
 	assert(block_size >= header_size);
+	// initialize extent within this just-allocated base_block
+	// base_block layour: base_block_t header + actual extent
 	base_edata_init(extent_sn_next, &block->edata,
 	    (void *)((byte_t *)block + header_size), block_size - header_size);
 	return block;
@@ -399,6 +508,54 @@ b0get(void) {
 	return b0;
 }
 
+/*
+This function 
+1. allocates a new block_t
+2. allocate a new base allocator as the first thing in the new block_t's extent
+3. store that block_t as the first item in the base allocator's block list
+4. store the block_t's extent's remainnig space into the base allocator's avail per-size-class list
+
+Visualizing the memory layout of the new block_t and the base_t and how they cross-reference each other
+
+Base Block (block_t)       <- a block is allocated in one page-aligned contiguous piece of memory
++------------------------+    it contains a header followed by remaining memory space
+| base_block_t header    |  
+|   +----------------+   |  
+|   | size          |    | <- Total size of the block  
+|   | next          |    |    (including header) , can be used to infer the starting addr of Available Memory
+|   | edata_t       |    |  
+|   |   - e_addr    |    | <- Points to next available memory  
+|   |   - e_bits    |    |    (shown with arrow below)  
+|   |   - e_size_esn|    |  
+|   |   - e_bsize   |    | <- Size of remainig available memory  
+|   |   - etc.      |    |    (block size - header size - base_t size)  
+|   +----------------+   |  
+|                        |
+|                        |  
+| Available Memory       |  <- Memory region for metadata allocations. 
+|   +----------------+   |     (size = base_block_t->size - header size)  
+|                        |  
+|   +----------------+   |  <- a base allocator is allocated as the first thing in the available memory area
+|   | base_t struct  |   |     within this newly allocated block. 
+|   |   - ...        |   |  
+|   |   - ...        |   |  
+|   |   - blocks ----+---+-----> Points back to base_block_t  
+|   |   - ...        |   |       (circular reference)  
+|   |   - ...        |   |  
+|   |   - avail[i]---+---+-----> One size class entry points to next available address after this base_t
+|   |   - mtx        |   |  
+|   |   - etc.       |   |  
+|   +----------------+   |  
+|   | Next available |   | <- 1. edata_t->e_addr points here 
+|   | memory starts  |   |    2. base_t->avail[size_class] points here (after base_t allocation)  
+|   | here           |   |  
+|   |                |   |  
+|   | Future metadata|   |  
+|   | allocations... |   |  
+|   +----------------+   |  
++------------------------+ 
+
+*/
 base_t *
 base_new(tsdn_t *tsdn, unsigned ind, const extent_hooks_t *extent_hooks,
     bool metadata_use_hooks) {
@@ -415,6 +572,9 @@ base_new(tsdn_t *tsdn, unsigned ind, const extent_hooks_t *extent_hooks,
 	    (extent_hooks_t *)extent_hooks :
 	    (extent_hooks_t *)&ehooks_default_extent_hooks, ind);
 
+	// allocated one base_block_t at a random new location, tsdn is not used.
+	// base_block_t memory block layout: base_block_t header + extent
+	// This block is large enough to hold both the base_block_t header and the base_t structure
 	base_block_t *block = base_block_alloc(tsdn, NULL, &fake_ehooks, ind,
 	    &pind_last, &extent_sn_next, sizeof(base_t), QUANTUM);
 	if (block == NULL) {
@@ -424,23 +584,28 @@ base_new(tsdn_t *tsdn, unsigned ind, const extent_hooks_t *extent_hooks,
 	size_t gap_size;
 	size_t base_alignment = CACHELINE;
 	size_t base_size = ALIGNMENT_CEILING(sizeof(base_t), base_alignment);
+
+	// so the base allocator is allocated inside the first base_block_t? yes
+	// It's placed after the base_block_t header, with proper alignment
+	// memory layout of this block: 
+	// [base_block_t header][base_t structure][remaining space]
 	base_t *base = (base_t *)base_extent_bump_alloc_helper(&block->edata,
 	    &gap_size, base_size, base_alignment);
-	ehooks_init(&base->ehooks, (extent_hooks_t *)extent_hooks, ind);
+	ehooks_init(&base->ehooks, (extent_hooks_t *)extent_hooks, ind); // ehooks_default_extent_hooks, ind is 0
 	ehooks_init(&base->ehooks_base, metadata_use_hooks ?
 	    (extent_hooks_t *)extent_hooks :
-	    (extent_hooks_t *)&ehooks_default_extent_hooks, ind);
+	    (extent_hooks_t *)&ehooks_default_extent_hooks, ind); // ehooks_default_extent_hooks
 	if (malloc_mutex_init(&base->mtx, "base", WITNESS_RANK_BASE,
 	    malloc_mutex_rank_exclusive)) {
 		base_unmap(tsdn, &fake_ehooks, ind, block, block->size);
 		return NULL;
 	}
-	base->pind_last = pind_last;
-	base->extent_sn_next = extent_sn_next;
-	base->blocks = block;
+	base->pind_last = pind_last; // what's this?
+	base->extent_sn_next = extent_sn_next; // what's this?
+	base->blocks = block; // put the first allocated base_block_t at the head of the block list in this base allocator
 	base->auto_thp_switched = false;
 	for (szind_t i = 0; i < SC_NSIZES; i++) {
-		edata_heap_new(&base->avail[i]);
+		edata_heap_new(&base->avail[i]); // what are these?
 	}
 	edata_avail_new(&base->edata_avail);
 
@@ -506,6 +671,8 @@ base_alloc_impl(tsdn_t *tsdn, base_t *base, size_t size, size_t alignment,
 
 	edata_t *edata = NULL;
 	malloc_mutex_lock(tsdn, &base->mtx);
+	// edata is an extent, like a slab
+	// if there is existing slab in base, use it, otherwise, allocate a new slab/extent
 	for (szind_t i = sz_size2index(asize); i < SC_NSIZES; i++) {
 		edata = edata_heap_remove_first(&base->avail[i]);
 		if (edata != NULL) {
@@ -682,6 +849,7 @@ base_postfork_child(tsdn_t *tsdn, base_t *base) {
 
 bool
 base_boot(tsdn_t *tsdn) {
+	// allocate global singleton base allocator
 	b0 = base_new(tsdn, 0, (extent_hooks_t *)&ehooks_default_extent_hooks,
 	    /* metadata_use_hooks */ true);
 	return (b0 == NULL);

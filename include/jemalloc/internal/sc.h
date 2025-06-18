@@ -84,7 +84,7 @@
  * Tiny size classes:
  * - Count: LG_QUANTUM - SC_LG_TINY_MIN.
  * - Sizes:
- *     1 << SC_LG_TINY_MIN
+ *     1 << SC_LG_TINY_MIN                        // 8
  *     1 << (SC_LG_TINY_MIN + 1)
  *     1 << (SC_LG_TINY_MIN + 2)
  *     ...
@@ -93,33 +93,33 @@
  * Initial pseudo-group:
  * - Count: SC_NGROUP
  * - Sizes:
- *     1 * (1 << LG_QUANTUM)
- *     2 * (1 << LG_QUANTUM)
- *     3 * (1 << LG_QUANTUM)
+ *     1 * (1 << LG_QUANTUM)                      // 16
+ *     2 * (1 << LG_QUANTUM)                      // 32
+ *     3 * (1 << LG_QUANTUM)                      // 48
  *     ...
- *     SC_NGROUP * (1 << LG_QUANTUM)
+ *     SC_NGROUP * (1 << LG_QUANTUM)              // 64
  *
  * Regular group 0:
  * - Count: SC_NGROUP
  * - Sizes:
  *   (relative to lg_base of LG_QUANTUM + SC_LG_NGROUP and lg_delta of
  *   lg_base - SC_LG_NGROUP)
- *     (1 << lg_base) + 1 * (1 << lg_delta)
- *     (1 << lg_base) + 2 * (1 << lg_delta)
- *     (1 << lg_base) + 3 * (1 << lg_delta)
+ *     (1 << lg_base) + 1 * (1 << lg_delta)                                            // 80
+ *     (1 << lg_base) + 2 * (1 << lg_delta)                                            // 96
+ *     (1 << lg_base) + 3 * (1 << lg_delta)                                            // 112
  *     ...
- *     (1 << lg_base) + SC_NGROUP * (1 << lg_delta) [ == (1 << (lg_base + 1)) ]
+ *     (1 << lg_base) + SC_NGROUP * (1 << lg_delta) [ == (1 << (lg_base + 1)) ]        // 128
  *
  * Regular group 1:
  * - Count: SC_NGROUP
  * - Sizes:
  *   (relative to lg_base of LG_QUANTUM + SC_LG_NGROUP + 1 and lg_delta of
  *   lg_base - SC_LG_NGROUP)
- *     (1 << lg_base) + 1 * (1 << lg_delta)
- *     (1 << lg_base) + 2 * (1 << lg_delta)
- *     (1 << lg_base) + 3 * (1 << lg_delta)
- *     ...
- *     (1 << lg_base) + SC_NGROUP * (1 << lg_delta) [ == (1 << (lg_base + 1)) ]
+ *     (1 << lg_base) + 1 * (1 << lg_delta)                                            // 160 
+ *     (1 << lg_base) + 2 * (1 << lg_delta)                                            // 192
+ *     (1 << lg_base) + 3 * (1 << lg_delta)                                            // 224
+ *     ...  
+ *     (1 << lg_base) + SC_NGROUP * (1 << lg_delta) [ == (1 << (lg_base + 1)) ]        // 256
  *
  * ...
  *
